@@ -1,0 +1,105 @@
+name: TradingAgents-CN 股票分析
+
+on:
+  workflow_dispatch:
+    inputs:
+      stock_codes:
+        description: '股票代码 (多个用逗号分隔, 如: 600032,000720,603193)'
+        required: true
+        default: '600032'
+      analyze_date:
+        description: '分析日期 (YYYY-MM-DD, 留空则使用今日)'
+        required: false
+        default: ''
+      deep_level:
+        description: '分析深度 (1-5, 1最简单, 5最详细)'
+        required: false
+        default: '2'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 设置Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      
+      - name: 批量运行AI分析
+        run: |
+          python << 'EOF'
+          import os
+          import sys
+          
+          stock_codes_str = "${{ github.event.inputs.stock_codes }}"
+          analyze_date = "${{ github.event.inputs.analyze_date }}" or None
+          deep_level = int("${{ github.event.inputs.deep_level }}")
+          
+          stock_codes = [s.strip() for s in stock_codes_str.split(',') if s.strip()]
+          
+          print("=" * 60)
+          print(f"批量股票分析 - {len(stock_codes)}只")
+          print(f"股票: {stock_codes}")
+          print("=" * 60)
+          
+          results = []
+          
+          try:
+              from tradingagents.agentchat import AgentChat
+              
+              for i, stock_code in enumerate(stock_codes, 1):
+                  print(f"\n[{i}/{len(stock_codes)}] 分析 {stock_code}...")
+                  
+                  try:
+                      chat = AgentChat(
+                          stock_code=stock_code, 
+                          user_max_turns=deep_level,
+                          analyze_date=analyze_date
+                      )
+                      result = chat.run()
+                      
+                      with open(f"analysis_{stock_code}.txt", "w", encoding="utf-8") as f:
+                          f.write(f"股票: {stock_code}\n")
+                          f.write(result)
+                      
+                      print(f"✅ {stock_code} 完成")
+                      results.append({"code": stock_code, "status": "success"})
+                      
+                  except Exception as e:
+                      print(f"❌ {stock_code} 失败: {e}")
+                      results.append({"code": stock_code, "status": "failed"})
+                  
+                  if i < len(stock_codes):
+                      import time
+                      time.sleep(5)
+              
+              print("\n" + "=" * 60)
+              print(f"成功: {sum(1 for r in results if r['status']=='success')}")
+              print(f"失败: {sum(1 for r in results if r['status']=='failed')}")
+              
+          except Exception as e:
+              print(f"错误: {e}")
+              sys.exit(1)
+          EOF
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      
+      - name: 上传分析结果
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: analysis-results
+          path: |
+            analysis_*.txt
+            *.log
